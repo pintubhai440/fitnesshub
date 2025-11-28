@@ -753,43 +753,64 @@ const Shorts = () => {
 
 const VoiceAssistant = () => {
   const [connected, setConnected] = useState(false);
-  const [volume, setVolume] = useState(0);
   
-  // Audio Context Refs
-  const audioContextRef = useRef<AudioContext | null>(null);
+  // Audio Refs - Sab refs use karenge taaki re-render par data na udaye
+  const inputAudioContextRef = useRef<AudioContext | null>(null);
+  const outputAudioContextRef = useRef<AudioContext | null>(null);
   const inputSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const sessionRef = useRef<any>(null);
+  const nextStartTimeRef = useRef<number>(0); // Queue manage karne ke liye
 
   const startSession = async () => {
     try {
+      // 1. Setup Output Audio Context (Speaker) - EK BAAR bas
+      if (!outputAudioContextRef.current) {
+        outputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      }
+
+      // 2. Setup Input Stream (Mic)
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
-      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+      
+      // Input context for Mic (16kHz for Gemini)
+      inputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
       
       const onAudioData = async (base64: string) => {
-         // Handle incoming audio from Gemini
-         const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+         // Output Context use karein jo upar banaya tha
+         const ctx = outputAudioContextRef.current;
+         if (!ctx) return;
+
+         // Decode Audio
          const binaryString = atob(base64);
          const len = binaryString.length;
          const bytes = new Uint8Array(len);
          for (let i = 0; i < len; i++) {
             bytes[i] = binaryString.charCodeAt(i);
          }
-         // PCM to Buffer conversion
+         
          const dataInt16 = new Int16Array(bytes.buffer);
-         const audioBuffer = outputCtx.createBuffer(1, dataInt16.length, 24000);
+         const audioBuffer = ctx.createBuffer(1, dataInt16.length, 24000);
          const channelData = audioBuffer.getChannelData(0);
+         
+         // Convert PCM to Audio Buffer
          for(let i=0; i<dataInt16.length; i++) {
              channelData[i] = dataInt16[i] / 32768.0;
          }
          
-         const source = outputCtx.createBufferSource();
+         // Play Audio in Queue (Smooth Streaming)
+         const source = ctx.createBufferSource();
          source.buffer = audioBuffer;
-         source.connect(outputCtx.destination);
-         source.start();
-         setVolume(Math.random() * 100);
+         source.connect(ctx.destination);
+         
+         const now = ctx.currentTime;
+         // Agar pichla audio khatam ho gaya hai, toh abhi chalao, nahi toh queue mein lagao
+         const startTime = Math.max(now, nextStartTimeRef.current);
+         
+         source.start(startTime);
+         // Next start time set karein
+         nextStartTimeRef.current = startTime + audioBuffer.duration;
       };
 
       const session = await GeminiService.connectLiveSession(
@@ -799,22 +820,21 @@ const VoiceAssistant = () => {
       );
       sessionRef.current = session;
 
-      // Input Pipeline
-      inputSourceRef.current = audioContextRef.current.createMediaStreamSource(stream);
-      processorRef.current = audioContextRef.current.createScriptProcessor(4096, 1, 1);
+      // 3. Process Mic Input
+      inputSourceRef.current = inputAudioContextRef.current.createMediaStreamSource(stream);
+      processorRef.current = inputAudioContextRef.current.createScriptProcessor(4096, 1, 1);
       
       processorRef.current.onaudioprocess = (e) => {
          const inputData = e.inputBuffer.getChannelData(0);
-         // Downsample/Convert to PCM 16kHz
+         // Convert to PCM 16kHz Int16
          const l = inputData.length;
          const int16 = new Int16Array(l);
          for (let i = 0; i < l; i++) {
             int16[i] = inputData[i] * 32768;
          }
-         // Send to Gemini
+         
          const blobData = btoa(String.fromCharCode.apply(null, new Uint8Array(int16.buffer) as any));
          
-         // Ensure session is connected
          session.sendRealtimeInput({
              media: {
                  mimeType: 'audio/pcm;rate=16000',
@@ -824,7 +844,7 @@ const VoiceAssistant = () => {
       };
       
       inputSourceRef.current.connect(processorRef.current);
-      processorRef.current.connect(audioContextRef.current.destination);
+      processorRef.current.connect(inputAudioContextRef.current.destination);
 
     } catch (e) {
       console.error(e);
@@ -833,10 +853,8 @@ const VoiceAssistant = () => {
   };
 
   const stopSession = () => {
-    // Graceful shutdown with safety checks
     try {
         if (sessionRef.current) {
-          // Attempt to close if method exists
           try { sessionRef.current.close?.(); } catch(e){}
           sessionRef.current = null;
         }
@@ -846,31 +864,21 @@ const VoiceAssistant = () => {
           streamRef.current = null;
         }
         
-        if (inputSourceRef.current) {
-           inputSourceRef.current.disconnect();
-           inputSourceRef.current = null;
-        }
-
-        if (processorRef.current) {
-           processorRef.current.disconnect();
-           processorRef.current = null;
-        }
-
-        if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-           audioContextRef.current.close().catch(console.error);
-           audioContextRef.current = null;
-        }
+        // Contexts ko disconnect karein par close nahi (taaki dobara start ho sake)
+        if (inputSourceRef.current) inputSourceRef.current.disconnect();
+        if (processorRef.current) processorRef.current.disconnect();
+        
+        // Reset Time Queue
+        nextStartTimeRef.current = 0;
+        
     } catch(e) {
         console.error("Error stopping session", e);
     }
     setConnected(false);
   };
 
-  // Cleanup on unmount
   useEffect(() => {
-    return () => {
-      stopSession();
-    }
+    return () => stopSession();
   }, []);
 
   return (
@@ -903,7 +911,6 @@ const VoiceAssistant = () => {
     </div>
   );
 };
-
 // --- Main App ---
 
 export default function App() {
