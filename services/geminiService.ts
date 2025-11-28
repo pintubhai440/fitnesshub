@@ -38,7 +38,7 @@ export const analyzeExerciseVideo = async (
     `;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-2.5-pro',
       contents: {
         parts: [
           { inlineData: { mimeType, data: videoBase64 } },
