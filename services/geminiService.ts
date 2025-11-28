@@ -225,7 +225,7 @@ export const chatWithBot = async (
   imageBase64?: string
 ) => {
   const chat = ai.chats.create({
-    model: 'gemini-2.5-pro',
+    model: 'gemini-2.5-flash',
     history: history as any,
   });
 
