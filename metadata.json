@@ -1,0 +1,8 @@
+{
+  "name": "AI Fitness Counter",
+  "description": "An advanced AI-powered fitness companion that analyzes workout videos, tracks reps, generates diet plans, and provides real-time voice assistance.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
